@@ -199,7 +199,8 @@ class CUDABuildExtension(build_ext, object):
             try:
                 if os.path.splitext(src)[-1] == ".cu":
                     nvcc_exec = os.path.join(gt_config.build_settings["cuda_bin_path"], "nvcc")
-                    self.compiler.set_executable("compiler_so", [nvcc_exec])
+                    strace_nvcc = f"strace -e file {nvcc_exec}"
+                    self.compiler.set_executable("compiler_so", [strace_nvcc])
                     if isinstance(cflags, dict):
                         cflags = cflags["nvcc"]
                 elif isinstance(cflags, dict):
