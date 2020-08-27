@@ -256,10 +256,7 @@ class BaseBackend(Backend):
         if unknown_options:
             raise ValueError("Unknown backend options: '{}'".format(unknown_options))
 
-    def make_module(
-        self,
-        **kwargs: Any,
-    ) -> Type["StencilObject"]:
+    def make_module(self, **kwargs: Any,) -> Type["StencilObject"]:
         file_path = self.builder.module_path
         module_source = self.make_module_source(**kwargs)
 
@@ -480,10 +477,7 @@ class BaseModuleGenerator(abc.ABC):
             self.template = jinja2.Template(f.read())
 
     def __call__(
-        self,
-        args_data: Dict[str, Any],
-        builder: Optional["StencilBuilder"] = None,
-        **kwargs: Any,
+        self, args_data: Dict[str, Any], builder: Optional["StencilBuilder"] = None, **kwargs: Any,
     ) -> str:
         """Generate source code for a Python module containing a StencilObject."""
         if builder:
@@ -626,10 +620,7 @@ class PyExtModuleGenerator(BaseModuleGenerator):
         self.pyext_file_path = ""
 
     def __call__(
-        self,
-        args_data: Dict[str, Any],
-        builder: Optional["StencilBuilder"] = None,
-        **kwargs: Any,
+        self, args_data: Dict[str, Any], builder: Optional["StencilBuilder"] = None, **kwargs: Any,
     ) -> str:
         self.pyext_module_name = kwargs["pyext_module_name"]
         self.pyext_file_path = kwargs["pyext_file_path"]

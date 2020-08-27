@@ -224,14 +224,6 @@ class GTPyExtGenerator(gt_ir.IRNodeVisitor):
 
         self.domain = impl_node.domain
         self.k_splitters: List[Tuple[str, int]] = []
-        # k_ax = self.domain.sequential_axis.name
-        # if k_ax in self.impl_node.axis_splitters:
-        #     for item in self.impl_node.axis_splitters[k_ax]:
-        #         if item.is_scalar:
-        #             values = [(item.name, None)]
-        #         else:
-        #             values = [(item.name, i) for i in range(item.length)]
-        #         self.k_splitters.extend(values)
 
         source = self.visit(impl_node)
 
@@ -388,11 +380,6 @@ class GTPyExtGenerator(gt_ir.IRNodeVisitor):
         return (start_splitter, start_offset), (end_splitter, end_offset)
 
     def visit_ApplyBlock(self, node: gt_ir.ApplyBlock):
-        # if node.intervals:
-        #     assert set(node.intervals.keys()) == {self.domain.sequential_axis.name}
-        #     interval_definition = self.visit(node.intervals[self.domain.sequential_axis.name])
-        # else:
-        #     interval_definition = (None, None)
         interval_definition = self.visit(node.interval)
 
         self.declared_symbols = set()
@@ -403,7 +390,6 @@ class GTPyExtGenerator(gt_ir.IRNodeVisitor):
 
     def visit_Stage(self, node: gt_ir.Stage):
         # Initialize symbols for the generation of references in this stage
-        # self.stage_symbols = dict(node.local_symbols)
         self.stage_symbols = {}
         args = []
         for accessor in node.accessors:
@@ -536,8 +522,7 @@ class BaseGTBackend(gt_backend.BasePyExtBackend, gt_backend.CLIBackendMixin):
 
         # Generate and return the Python wrapper class
         return self.make_module(
-            pyext_module_name=pyext_module_name,
-            pyext_file_path=pyext_file_path,
+            pyext_module_name=pyext_module_name, pyext_file_path=pyext_file_path,
         )
 
     def generate_computation(self) -> Dict[str, Union[str, Dict]]:
