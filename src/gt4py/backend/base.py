@@ -20,7 +20,20 @@ import hashlib
 import numbers
 import os
 import pathlib
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple, Type, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    Generator,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Type,
+    Union,
+)
 
 import jinja2
 
@@ -132,7 +145,6 @@ class Backend(abc.ABC):
 
         Returns
         -------
-
         type:
             The generated stencil class after loading through python's import API
 
@@ -144,7 +156,7 @@ class Backend(abc.ABC):
 
     @property
     def extra_cache_info(self) -> Dict[str, Any]:
-        """Hook for storing additional data in cache info file."""
+        """Store additional data in cache info file (subclass hook)."""
         return {}
 
     @property
@@ -159,10 +171,8 @@ class CLIBackendMixin:
         """
         Generate the computation source code in a way agnostic of the way it is going to be used.
 
-
         Returns
         -------
-
         Dict[str, str | Dict] of source file names / directories -> contents:
             If a key's value is a string it is interpreted as a file name and the value as the
             source code of that file
@@ -171,13 +181,11 @@ class CLIBackendMixin:
 
         Raises
         ------
-
         NotImplementedError
             If the backend does not support usage outside of JIT compilation / generation.
 
         Example
         -------
-
         .. code-block:: python
 
             def mystencil(...):
@@ -271,43 +279,76 @@ class BaseBackend(Backend):
         return source
 
     @staticmethod
-    def make_args_data_from_iir(implementation_ir: gt_ir.StencilImplementation) -> Dict[str, Any]:
+    def _yield_accessors_from_implementation_ir(
+        implementation_ir: gt_ir.StencilImplementation,
+    ) -> Generator[gt_ir.FieldAccessor, None, None]:
+        group_stages = (sg.stages for ms in implementation_ir.multi_stages for sg in ms.groups)
+        accs = (acc for stages in group_stages for acc in stages)
+        for acc in accs:
+            yield acc
+
+    @staticmethod
+    def _yield_accessor_symbols_from_accessors(
+        accessors: Generator[gt_ir.FieldAccessor, None, None],
+    ) -> Generator[str, None, None]:
+        for acc in accessors:
+            if (
+                isinstance(acc, gt_ir.FieldAccessor)
+                and acc.intent == gt_ir.AccessIntent.READ_WRITE
+            ):
+                yield acc.symbol
+
+    @staticmethod
+    def _make_field_info_from_arg(
+        arg: gt_ir.ArgumentInfo,
+        implementation_ir: gt_ir.StencilImplementation,
+        out_fields: Set[str],
+    ) -> Optional[gt_definitions.FieldInfo]:
+        if arg.name in implementation_ir.unreferenced:
+            return None
+        access = (
+            gt_definitions.AccessKind.READ_WRITE
+            if arg.name in out_fields
+            else gt_definitions.AccessKind.READ_ONLY
+        )
+        return gt_definitions.FieldInfo(
+            access=access,
+            dtype=implementation_ir.fields[arg.name].data_type.dtype,
+            boundary=implementation_ir.fields_extents[arg.name].to_boundary(),
+        )
+
+    @staticmethod
+    def _make_param_info_from_arg(
+        arg: gt_ir.ArgumentInfo, implementation_ir: gt_ir.StencilImplementation
+    ) -> Optional[gt_definitions.ParameterInfo]:
+        if arg.name in implementation_ir.unreferenced:
+            return None
+        return gt_definitions.ParameterInfo(
+            dtype=implementation_ir.parameters[arg.name].data_type.dtype
+        )
+
+    @classmethod
+    def make_args_data_from_iir(
+        cls, implementation_ir: gt_ir.StencilImplementation
+    ) -> Dict[str, Any]:
         data: Dict[str, Any] = {"field_info": {}, "parameter_info": {}, "unreferenced": {}}
 
         # Collect access type per field
-        out_fields = set()
-        for ms in implementation_ir.multi_stages:
-            for sg in ms.groups:
-                for st in sg.stages:
-                    for acc in st.accessors:
-                        if (
-                            isinstance(acc, gt_ir.FieldAccessor)
-                            and acc.intent == gt_ir.AccessIntent.READ_WRITE
-                        ):
-                            out_fields.add(acc.symbol)
+        out_fields = set(
+            cls._yield_accessor_symbols_from_accessors(
+                cls._yield_accessors_from_implementation_ir(implementation_ir)
+            )
+        )
 
         for arg in implementation_ir.api_signature:
             if arg.name in implementation_ir.fields:
-                access = (
-                    gt_definitions.AccessKind.READ_WRITE
-                    if arg.name in out_fields
-                    else gt_definitions.AccessKind.READ_ONLY
+                data["field_info"][arg.name] = cls._make_field_info_from_arg(
+                    arg, implementation_ir, out_fields
                 )
-                if arg.name not in implementation_ir.unreferenced:
-                    data["field_info"][arg.name] = gt_definitions.FieldInfo(
-                        access=access,
-                        dtype=implementation_ir.fields[arg.name].data_type.dtype,
-                        boundary=implementation_ir.fields_extents[arg.name].to_boundary(),
-                    )
-                else:
-                    data["field_info"][arg.name] = None
             else:
-                if arg.name not in implementation_ir.unreferenced:
-                    data["parameter_info"][arg.name] = gt_definitions.ParameterInfo(
-                        dtype=implementation_ir.parameters[arg.name].data_type.dtype
-                    )
-                else:
-                    data["parameter_info"][arg.name] = None
+                data["parameter_info"][arg.name] = cls._make_param_info_from_arg(
+                    arg, implementation_ir
+                )
 
         data["unreferenced"] = implementation_ir.unreferenced
 
@@ -445,7 +486,6 @@ class BaseModuleGenerator(abc.ABC):
         **kwargs: Any,
     ) -> str:
         """Generate source code for a Python module containing a StencilObject."""
-
         if builder:
             self._builder = builder
         self.args_data = args_data
@@ -514,7 +554,7 @@ class BaseModuleGenerator(abc.ABC):
     @property
     def builder(self) -> "StencilBuilder":
         """
-        Buider reference
+        Buider reference.
 
         Raises a runtime error if the builder reference is not initialized.
         This is necessary because other parts of the public API depend on it before it is
@@ -544,22 +584,21 @@ class BaseModuleGenerator(abc.ABC):
         source = ""
         return source
 
+    def _yield_formatted_args_from_definition_ir(self) -> Generator[Tuple[Any, str], None, None]:
+        for arg in self.builder.definition_ir.api_signature:
+            if arg.default is not gt_ir.Empty:
+                yield arg, f"{arg.name}={arg.default}"
+            else:
+                yield arg, arg.name
+
     def generate_signature(self) -> str:
         args = []
         keyword_args = ["*"]
-        for arg in self.builder.definition_ir.api_signature:
+        for arg, formatted_arg in self._yield_formatted_args_from_definition_ir():
             if arg.is_keyword:
-                if arg.default is not gt_ir.Empty:
-                    keyword_args.append(
-                        "{name}={default}".format(name=arg.name, default=arg.default)
-                    )
-                else:
-                    keyword_args.append(arg.name)
+                keyword_args.append(formatted_arg)
             else:
-                if arg.default is not gt_ir.Empty:
-                    args.append("{name}={default}".format(name=arg.name, default=arg.default))
-                else:
-                    args.append(arg.name)
+                args.append(arg.formatted_arg)
 
         if len(keyword_args) > 1:
             args.extend(keyword_args)
@@ -610,17 +649,16 @@ pyext_module = gt_utils.make_module_from_file(
             )
         return source
 
-    def generate_implementation(self) -> str:
-        definition_ir = self.builder.definition_ir
-        sources = gt_utils.text.TextBlock(indent_size=BaseModuleGenerator.TEMPLATE_INDENT_SIZE)
-
-        args = []
-        api_fields = set(field.name for field in definition_ir.api_fields)
-        for arg in definition_ir.api_signature:
+    def _yield_args_from_definition_ir(self) -> Generator[str, None, None]:
+        api_fields = {field.name for field in self.builder.definition_ir.api_fields}
+        for arg in self.builder.definition_ir.api_signature:
             if arg.name not in self.args_data["unreferenced"]:
-                args.append(arg.name)
+                yield arg.name
                 if arg.name in api_fields:
-                    args.append("list(_origin_['{}'])".format(arg.name))
+                    yield f"list(_origin_['{arg.name}'])"
+
+    def generate_implementation(self) -> str:
+        sources = gt_utils.text.TextBlock(indent_size=BaseModuleGenerator.TEMPLATE_INDENT_SIZE)
 
         # only generate implementation if any multi_stages are present. e.g. if no statement in the
         # stencil has any effect on the API fields, this may not be the case since they could be
@@ -630,7 +668,7 @@ pyext_module = gt_utils.make_module_from_file(
 # Load or generate a GTComputation object for the current domain size
 pyext_module.run_computation(list(_domain_), {run_args}, exec_info)
 """.format(
-                run_args=", ".join(args)
+                run_args=", ".join(self._yield_args_from_definition_ir())
             )
             sources.extend(source.splitlines())
         else:

@@ -21,6 +21,7 @@ repos:
     rev: 3.8.2
     hooks:
     - id: flake8
+      additional_dependencies: ["mccabe", "flake8-rst-docstrings", "pygments", "flake8-docstrings", "flake8-eradicate", "flake8-fixme", "flake8-mutable", "flake8-cognitive-complexity", "flake8-expression-complexity"]
       exclude: >
           (?x)^(
           setup.py |
