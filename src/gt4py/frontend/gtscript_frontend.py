@@ -1137,13 +1137,7 @@ class IRMaker(ast.NodeVisitor):
 
         for t in node.targets[0].elts if isinstance(node.targets[0], ast.Tuple) else node.targets:
             if isinstance(t, ast.Subscript):
-                if isinstance(t.slice, ast.Index) and (
-                    isinstance(t.slice.value, ast.Ellipsis)
-                    or (
-                        isinstance(t.slice.value, ast.Tuple)
-                        and all(v.n == 0 for v in t.slice.value.elts)
-                    )
-                ):
+                if astshims.Slice.is_ellipsis(t.slice) or astshims.Slice.is_zero_point(t.slice):
                     if t.value.id not in {
                         name for name, field in self.fields.items() if field.is_api
                     }:
