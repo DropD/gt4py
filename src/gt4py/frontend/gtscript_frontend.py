@@ -31,7 +31,7 @@ from gt4py import frontend as gt_frontend
 from gt4py import gtscript
 from gt4py import ir as gt_ir
 from gt4py import utils as gt_utils
-from gt4py.utils import NOTHING
+from gt4py.utils import NOTHING, astshims
 from gt4py.utils import meta as gt_meta
 
 

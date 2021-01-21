@@ -38,7 +38,7 @@ class _Py38SliceShims:
 
 class _Py39SliceShims:
     @staticmethod
-    def subscript_is_ellipsis(node):
+    def is_ellipsis(node):
         return isinstance(node, ast.Ellipsis)
 
     @staticmethod
@@ -53,8 +53,9 @@ class _Py39SliceShims:
 
     @classmethod
     def is_zero_point(cls, node):
+        print(node)
         if cls.is_multi_dim(node):
-            return all(_Py39ConstShims.get_value(i) for i in cls.get_dims(node))
+            return all(_Py39ConstShims.get_value(i) == 0 for i in cls.get_dims(node))
         else:
             return _Py39ConstShims.get_value(node) == 0
 
@@ -74,7 +75,9 @@ class _Py38ConstShims:
 class _Py39ConstShims:
     @staticmethod
     def get_value(node):
-        return node.value
+        if hasattr(node, "value"):
+            return node.value
+        return None
 
 
 def get_version_shims():
