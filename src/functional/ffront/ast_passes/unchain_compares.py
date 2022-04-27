@@ -21,8 +21,10 @@ class UnchainComparesPass(ast.NodeTransformer):
     Turn comparison chain into a tree of comparisons linked by ``&`` operations.
 
     ``a > b < c == d ...`` is turned into ``((a > b) & ((b < c) & (c == d))`` and so on.
-    The resulting AST will have only ``Comparison`` nodes with to operands and one operation.
+    The resulting AST will have only binary ``Comparison`` nodes, i.e. with two operands and one operation.
     That is to say with the same structure as FOAST ``Comparison`` nodes.
+
+    Operands in the middle of the chain are duplicated, which may be a concern for expensive expressions.
 
     Examples:
     ---------
