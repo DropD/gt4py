@@ -31,33 +31,28 @@ from typing import Generic, SupportsFloat, SupportsInt, TypeAlias, TypeVar
 import numpy as np
 from devtools import debug
 
+import eve.utils
 from eve.extended_typing import Any, Optional
-from eve.utils import UIDGenerator
-from functional.common import DimensionKind, GridType, GTTypeError
-from functional.fencil_processors.processor_interface import (
-    FencilExecutor,
-    FencilFormatter,
-    ensure_processor_kind,
-)
+from functional import common
+from functional.fencil_processors import processor_interface as fpi
 from functional.fencil_processors.runners import roundtrip
 from functional.ffront import (
     common_types as ct,
+    fbuiltins,
     field_operator_ast as foast,
+    foast_to_itir,
+    func_to_foast,
+    func_to_past,
+    gtcallable,
+    past_to_itir,
     program_ast as past,
+    source_utils,
     symbol_makers,
     type_info,
 )
-from functional.ffront.fbuiltins import BUILTINS, Dimension, FieldOffset
-from functional.ffront.foast_passes.type_deduction import FieldOperatorTypeDeduction
-from functional.ffront.foast_to_itir import FieldOperatorLowering
-from functional.ffront.func_to_foast import FieldOperatorParser
-from functional.ffront.func_to_past import ProgramParser
-from functional.ffront.gtcallable import GTCallable
-from functional.ffront.past_passes.type_deduction import ProgramTypeDeduction, ProgramTypeError
-from functional.ffront.past_to_itir import ProgramLowering
-from functional.ffront.source_utils import SourceDefinition, get_closure_vars_from_function
-from functional.iterator import ir as itir
-from functional.iterator.embedded import constant_field
+from functional.ffront.foast_passes import type_deduction as foast_type_deduction
+from functional.ffront.past_passes import type_deduction as past_type_deduction
+from functional.iterator import embedded, ir as itir
 
 
 Scalar: TypeAlias = SupportsInt | SupportsFloat | np.int32 | np.int64 | np.float32 | np.float64
@@ -69,7 +64,7 @@ def _get_closure_vars_recursively(closure_vars: dict[str, Any]) -> dict[str, Any
     all_closure_vars = collections.ChainMap(closure_vars)
 
     for closure_var in closure_vars.values():
-        if isinstance(closure_var, GTCallable):
+        if isinstance(closure_var, gtcallable.GTCallable):
             # if the closure ref has closure refs by itself, also add them
             if child_closure_vars := closure_var.__gt_closure_vars__():
                 all_child_closure_vars = _get_closure_vars_recursively(child_closure_vars)
@@ -97,9 +92,9 @@ def _filter_closure_vars_by_type(closure_vars: dict[str, Any], *types: type) -> 
 
 
 def _deduce_grid_type(
-    requested_grid_type: Optional[GridType],
-    offsets_and_dimensions: Iterable[FieldOffset | Dimension],
-) -> GridType:
+    requested_grid_type: Optional[common.GridType],
+    offsets_and_dimensions: Iterable[fbuiltins.FieldOffset | common.Dimension],
+) -> common.GridType:
     """
     Derive grid type from actually occurring dimensions and check against optional user request.
 
@@ -108,21 +103,24 @@ def _deduce_grid_type(
     dimensions and offsets.
     """
 
-    def is_cartesian_offset(o: FieldOffset):
+    def is_cartesian_offset(o: fbuiltins.FieldOffset):
         return len(o.target) == 1 and o.source == o.target[0]
 
-    deduced_grid_type = GridType.CARTESIAN
+    deduced_grid_type = common.GridType.CARTESIAN
     for o in offsets_and_dimensions:
-        if isinstance(o, FieldOffset) and not is_cartesian_offset(o):
-            deduced_grid_type = GridType.UNSTRUCTURED
+        if isinstance(o, fbuiltins.FieldOffset) and not is_cartesian_offset(o):
+            deduced_grid_type = common.GridType.UNSTRUCTURED
             break
-        if isinstance(o, Dimension) and o.kind == DimensionKind.LOCAL:
-            deduced_grid_type = GridType.UNSTRUCTURED
+        if isinstance(o, common.Dimension) and o.kind == common.DimensionKind.LOCAL:
+            deduced_grid_type = common.GridType.UNSTRUCTURED
             break
 
-    if requested_grid_type == GridType.CARTESIAN and deduced_grid_type == GridType.UNSTRUCTURED:
-        raise GTTypeError(
-            "grid_type == GridType.CARTESIAN was requested, but unstructured `FieldOffset` or local `Dimension` was found."
+    if (
+        requested_grid_type == common.GridType.CARTESIAN
+        and deduced_grid_type == common.GridType.UNSTRUCTURED
+    ):
+        raise common.GTTypeError(
+            "grid_type == common.GridType.CARTESIAN was requested, but unstructured `FieldOffset` or local `Dimension` was found."
         )
 
     return deduced_grid_type if requested_grid_type is None else requested_grid_type
@@ -152,21 +150,21 @@ class Program:
 
     past_node: past.Program
     closure_vars: dict[str, Any]
-    backend: Optional[FencilExecutor]
+    backend: Optional[fpi.FencilExecutor]
     definition: Optional[types.FunctionType] = None
-    grid_type: Optional[GridType] = None
+    grid_type: Optional[common.GridType] = None
 
     @classmethod
     def from_function(
         cls,
         definition: types.FunctionType,
-        backend: Optional[FencilExecutor] = None,
-        grid_type: Optional[GridType] = None,
+        backend: Optional[fpi.FencilExecutor] = None,
+        grid_type: Optional[common.GridType] = None,
     ) -> Program:
-        source_def = SourceDefinition.from_function(definition)
-        closure_vars = get_closure_vars_from_function(definition)
+        source_def = source_utils.SourceDefinition.from_function(definition)
+        closure_vars = source_utils.get_closure_vars_from_function(definition)
         annotations = typing.get_type_hints(definition)
-        past_node = ProgramParser.apply(source_def, closure_vars, annotations)
+        past_node = func_to_past.ProgramParser.apply(source_def, closure_vars, annotations)
         return cls(
             past_node=past_node,
             closure_vars=closure_vars,
@@ -176,7 +174,9 @@ class Program:
         )
 
     def __post_init__(self):
-        function_closure_vars = _filter_closure_vars_by_type(self.closure_vars, GTCallable)
+        function_closure_vars = _filter_closure_vars_by_type(
+            self.closure_vars, gtcallable.GTCallable
+        )
         misnamed_functions = [
             f"{name} vs. {func.id}"
             for name, func in function_closure_vars.items()
@@ -197,7 +197,7 @@ class Program:
                 f"The following closure variables are undefined: {', '.join(undefined_symbols)}"
             )
 
-    def with_backend(self, backend: FencilExecutor) -> "Program":
+    def with_backend(self, backend: fpi.FencilExecutor) -> "Program":
         return Program(
             past_node=self.past_node,
             closure_vars=self.closure_vars,
@@ -212,17 +212,19 @@ class Program:
     @functools.cached_property
     def itir(self) -> itir.FencilDefinition:
         offsets_and_dimensions = _filter_closure_vars_by_type(
-            self._all_closure_vars, FieldOffset, Dimension
+            self._all_closure_vars, fbuiltins.FieldOffset, common.Dimension
         )
         grid_type = _deduce_grid_type(self.grid_type, offsets_and_dimensions.values())
 
-        gt_callables = _filter_closure_vars_by_type(self._all_closure_vars, GTCallable).values()
+        gt_callables = _filter_closure_vars_by_type(
+            self._all_closure_vars, gtcallable.GTCallable
+        ).values()
         lowered_funcs = [gt_callable.__gt_itir__() for gt_callable in gt_callables]
-        return ProgramLowering.apply(
+        return past_to_itir.ProgramLowering.apply(
             self.past_node, function_definitions=lowered_funcs, grid_type=grid_type
         )
 
-    def __call__(self, *args, offset_provider: dict[str, Dimension], **kwargs) -> None:
+    def __call__(self, *args, offset_provider: dict[str, common.Dimension], **kwargs) -> None:
         rewritten_args, size_args, kwargs = self._process_args(args, kwargs)
 
         if not self.backend:
@@ -233,7 +235,7 @@ class Program:
             )
         backend = self.backend or DEFAULT_BACKEND
 
-        ensure_processor_kind(backend, FencilExecutor)
+        fpi.ensure_processor_kind(backend, fpi.FencilExecutor)
         if "debug" in kwargs:
             debug(self.itir)
 
@@ -247,9 +249,13 @@ class Program:
         )
 
     def format_itir(
-        self, *args, formatter: FencilFormatter, offset_provider: dict[str, Dimension], **kwargs
+        self,
+        *args,
+        formatter: fpi.FencilFormatter,
+        offset_provider: dict[str, common.Dimension],
+        **kwargs,
     ) -> str:
-        ensure_processor_kind(formatter, FencilFormatter)
+        fpi.ensure_processor_kind(formatter, fpi.FencilFormatter)
         rewritten_args, size_args, kwargs = self._process_args(args, kwargs)
         if "debug" in kwargs:
             debug(self.itir)
@@ -275,8 +281,8 @@ class Program:
                 with_kwargs=kwarg_types,
                 raise_exception=True,
             )
-        except GTTypeError as err:
-            raise ProgramTypeError.from_past_node(
+        except common.GTTypeError as err:
+            raise past_type_deduction.ProgramTypeError.from_past_node(
                 self.past_node, msg=f"Invalid argument types in call to `{self.past_node.id}`!"
             ) from err
 
@@ -294,9 +300,9 @@ class Program:
         for param_idx, param in enumerate(self.past_node.params):
             if isinstance(param.type, ct.ScalarType):
                 dtype = type_info.extract_dtype(param.type)
-                rewritten_args[param_idx] = constant_field(
+                rewritten_args[param_idx] = embedded.constant_field(
                     args[param_idx],
-                    dtype=BUILTINS[dtype.kind.name.lower()],
+                    dtype=fbuiltins.BUILTINS[dtype.kind.name.lower()],
                 )
             if implicit_domain and isinstance(param.type, ct.FieldType):
                 has_shape = hasattr(args[param_idx], "shape")
@@ -312,9 +318,9 @@ class Program:
         # construct mapping from column axis to scan operators defined on
         #  that dimension. only one column axis is allowed, but we can use
         #  this mapping to provide good error messages.
-        scanops_per_axis: dict[Dimension, str] = {}
+        scanops_per_axis: dict[common.Dimension, str] = {}
         for name, gt_callable in _filter_closure_vars_by_type(
-            self._all_closure_vars, GTCallable
+            self._all_closure_vars, gtcallable.GTCallable
         ).items():
             if isinstance((type_ := gt_callable.__gt_type__()), ct.ScanOperatorType):
                 scanops_per_axis.setdefault(type_.axis, []).append(name)
@@ -327,7 +333,7 @@ class Program:
                 f"- {dim.value}: {', '.join(scanops)}" for dim, scanops in scanops_per_axis.items()
             ]
 
-            raise GTTypeError(
+            raise common.GTTypeError(
                 "Only `ScanOperator`s defined on the same axis "
                 + "can be used in a `Program`, but found:\n"
                 + "\n".join(scanops_per_axis_strs)
@@ -342,7 +348,7 @@ def program(definition: types.FunctionType) -> Program:
 
 
 @typing.overload
-def program(*, backend: Optional[FencilExecutor]) -> Callable[[types.FunctionType], Program]:
+def program(*, backend: Optional[fpi.FencilExecutor]) -> Callable[[types.FunctionType], Program]:
     ...
 
 
@@ -380,7 +386,7 @@ OperatorNodeT = TypeVar("OperatorNodeT", bound=foast.LocatedNode)
 
 
 @dataclasses.dataclass(frozen=True)
-class FieldOperator(GTCallable, Generic[OperatorNodeT]):
+class FieldOperator(gtcallable.GTCallable, Generic[OperatorNodeT]):
     """
     Construct a field operator object from a FOAST node.
 
@@ -401,24 +407,26 @@ class FieldOperator(GTCallable, Generic[OperatorNodeT]):
 
     foast_node: OperatorNodeT
     closure_vars: dict[str, Any]
-    backend: Optional[FencilExecutor]
+    backend: Optional[fpi.FencilExecutor]
     definition: Optional[types.FunctionType] = None
 
     @classmethod
     def from_function(
         cls,
         definition: types.FunctionType,
-        backend: Optional[FencilExecutor] = None,
+        backend: Optional[fpi.FencilExecutor] = None,
         *,
         operator_node_cls: type[OperatorNodeT] = foast.FieldOperator,
         operator_attributes: Optional[dict[str, Any]] = None,
     ) -> FieldOperator[OperatorNodeT]:
         operator_attributes = operator_attributes or {}
 
-        source_def = SourceDefinition.from_function(definition)
-        closure_vars = get_closure_vars_from_function(definition)
+        source_def = source_utils.SourceDefinition.from_function(definition)
+        closure_vars = source_utils.get_closure_vars_from_function(definition)
         annotations = typing.get_type_hints(definition)
-        foast_definition_node = FieldOperatorParser.apply(source_def, closure_vars, annotations)
+        foast_definition_node = func_to_foast.FieldOperatorParser.apply(
+            source_def, closure_vars, annotations
+        )
         loc = foast_definition_node.location
         operator_attribute_nodes = {
             key: foast.Constant(
@@ -432,7 +440,7 @@ class FieldOperator(GTCallable, Generic[OperatorNodeT]):
             location=loc,
             **operator_attribute_nodes,
         )
-        foast_node = FieldOperatorTypeDeduction.apply(untyped_foast_node)
+        foast_node = foast_type_deduction.FieldOperatorTypeDeduction.apply(untyped_foast_node)
         return cls(
             foast_node=foast_node,
             closure_vars=closure_vars,
@@ -445,7 +453,7 @@ class FieldOperator(GTCallable, Generic[OperatorNodeT]):
         assert isinstance(type_, ct.CallableType)
         return type_
 
-    def with_backend(self, backend: FencilExecutor) -> FieldOperator:
+    def with_backend(self, backend: fpi.FencilExecutor) -> FieldOperator:
         return FieldOperator(
             foast_node=self.foast_node,
             closure_vars=self.closure_vars,
@@ -457,7 +465,9 @@ class FieldOperator(GTCallable, Generic[OperatorNodeT]):
         if hasattr(self, "__cached_itir"):
             return getattr(self, "__cached_itir")  # noqa: B009
 
-        itir_node: itir.FunctionDefinition = FieldOperatorLowering.apply(self.foast_node)
+        itir_node: itir.FunctionDefinition = foast_to_itir.FieldOperatorLowering.apply(
+            self.foast_node
+        )
 
         object.__setattr__(self, "__cached_itir", itir_node)
 
@@ -475,7 +485,7 @@ class FieldOperator(GTCallable, Generic[OperatorNodeT]):
         #  with the out argument of the program we generate here.
 
         loc = self.foast_node.location
-        param_sym_uids = UIDGenerator()  # use a new UID generator to allow caching
+        param_sym_uids = eve.utils.UIDGenerator()  # use a new UID generator to allow caching
 
         type_ = self.__gt_type__()
         params_decl: list[past.Symbol] = [
@@ -499,7 +509,7 @@ class FieldOperator(GTCallable, Generic[OperatorNodeT]):
         if self.foast_node.id in self.closure_vars:
             raise RuntimeError("A closure variable has the same name as the field operator itself.")
         closure_vars = {self.foast_node.id: self, **self.closure_vars}
-        closure_symbols = [
+        closure_symbols: dict[str, past.Symbol] = [
             past.Symbol(
                 id=name,
                 type=symbol_makers.make_symbol_type_from_value(val),
@@ -524,7 +534,7 @@ class FieldOperator(GTCallable, Generic[OperatorNodeT]):
             closure_vars=closure_symbols,
             location=loc,
         )
-        past_node = ProgramTypeDeduction.apply(untyped_past_node)
+        past_node = past_type_deduction.ProgramTypeDeduction.apply(untyped_past_node)
 
         return Program(
             past_node=past_node,
@@ -536,7 +546,7 @@ class FieldOperator(GTCallable, Generic[OperatorNodeT]):
         self,
         *args,
         out,
-        offset_provider: dict[str, Dimension],
+        offset_provider: dict[str, common.Dimension],
         **kwargs,
     ) -> None:
         # TODO(tehrengruber): check all offset providers are given
@@ -555,14 +565,14 @@ class FieldOperator(GTCallable, Generic[OperatorNodeT]):
 
 @typing.overload
 def field_operator(
-    definition: types.FunctionType, *, backend: Optional[FencilExecutor]
+    definition: types.FunctionType, *, backend: Optional[fpi.FencilExecutor]
 ) -> FieldOperator[foast.FieldOperator]:
     ...
 
 
 @typing.overload
 def field_operator(
-    *, backend: Optional[FencilExecutor]
+    *, backend: Optional[fpi.FencilExecutor]
 ) -> Callable[[types.FunctionType], FieldOperator[foast.FieldOperator]]:
     ...
 
@@ -598,7 +608,7 @@ def field_operator(
 def scan_operator(
     definition: types.FunctionType,
     *,
-    axis: Dimension,
+    axis: common.Dimension,
     forward: bool,
     init: Scalar,
     backend: Optional[str],
@@ -609,7 +619,7 @@ def scan_operator(
 @typing.overload
 def scan_operator(
     *,
-    axis: Dimension,
+    axis: common.Dimension,
     forward: bool,
     init: Scalar,
     backend: Optional[str],
@@ -620,7 +630,7 @@ def scan_operator(
 def scan_operator(
     definition: Optional[types.FunctionType] = None,
     *,
-    axis: Dimension,
+    axis: common.Dimension,
     forward: bool = True,
     init: Scalar = 0.0,
     backend=None,
@@ -634,7 +644,7 @@ def scan_operator(
         definition: Function from scalars to a scalar.
 
     Keyword Arguments:
-        axis: A :ref:`Dimension` to reduce over.
+        axis: A :ref:`common.Dimension` to reduce over.
         forward: Boolean specifying the direction.
         init: Initial value for the carry argument of the scan pass.
 
@@ -643,7 +653,7 @@ def scan_operator(
         >>> from functional.iterator.embedded import np_as_located_field
         >>> import functional.iterator.embedded
         >>> functional.iterator.embedded._column_range = 1
-        >>> KDim = Dimension("K", kind=DimensionKind.VERTICAL)
+        >>> KDim = common.Dimension("K", kind=common.DimensionKind.VERTICAL)
         >>> inp = np_as_located_field(KDim)(np.ones((10,)))
         >>> out = np_as_located_field(KDim)(np.zeros((10,)))
         >>> @scan_operator(axis=KDim, forward=True, init=0.)
