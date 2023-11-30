@@ -31,13 +31,14 @@ def test_default_backend_is_respected(cartesian_case):  # noqa: F811 # fixtures
     def copy(a: IField) -> IField:
         return a
 
-    a = cases.allocate(cartesian_case, copy, "a")
+    a = cases.allocate(cartesian_case, copy, "a")()
+    b = cases.allocate(cartesian_case, copy, cases.RETURN)()
 
     with pytest.raises(ValueError, match="No backend selected!"):
         # Calling this should fail if the default backend is respected
         # due to `fieldview_backend` fixture (dependency of `cartesian_case`)
         # setting the default backend to something invalid.
-        _ = copy(a)
+        _ = copy(a, out=b, offset_provider=cartesian_case.offset_provider)
 
 
 def test_with_backend_after_embedded(cartesian_case):  # noqa: F811 # fixtures
@@ -48,9 +49,15 @@ def test_with_backend_after_embedded(cartesian_case):  # noqa: F811 # fixtures
     def copy(a: IField) -> IField:
         return a
 
-    a = cases.allocate(cartesian_case, copy, "a")
+    a = cases.allocate(cartesian_case, copy, "a")()
+    b = cases.allocate(cartesian_case, copy, cases.RETURN)()
 
     # First executing embedded and then with backend.
     # This was accidentally broken with the introduction of embedded mode.
-    _ = copy(a)
-    _ = copy.with_backend(cartesian_case.backend)(a)
+    _ = copy(a, out=b, offset_provider=cartesian_case.offset_provider)
+
+    # What error type should this really raise?
+    with pytest.raises(ValueError, match="missing 'out' parameter"):
+        _ = copy.with_backend(cartesian_case.backend)(
+            a, offset_provider=cartesian_case.offset_provider
+        )
