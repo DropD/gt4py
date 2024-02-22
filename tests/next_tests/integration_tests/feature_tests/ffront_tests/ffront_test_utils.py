@@ -91,7 +91,10 @@ def exec_alloc_descriptor(request):
 
     backup_backend = decorator.DEFAULT_BACKEND
     decorator.DEFAULT_BACKEND = no_backend
-    yield next_tests.definitions.BackendDescriptorWrapper(backend)
+    if not isinstance(backend, next_tests.definitions.EmbeddedExecutionDescriptor):
+        yield next_tests.definitions.BackendDescriptorWrapper(backend)
+    else:
+        yield backend
     decorator.DEFAULT_BACKEND = backup_backend
 
 

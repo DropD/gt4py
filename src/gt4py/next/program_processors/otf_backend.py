@@ -33,12 +33,10 @@ HashT = TypeVar("HashT")
 @dataclasses.dataclass(frozen=True)
 class OTFBackend(ppi.ProgramExecutor, Generic[core_defs.DeviceTypeT]):
     allocator: next_allocators.FieldBufferAllocatorProtocol[core_defs.DeviceTypeT]
-    otf_workflow: Optional[workflow.Workflow[stages.ProgramCall, stages.CompiledProgram]]
+    otf_workflow: workflow.Workflow[stages.ProgramCall, stages.CompiledProgram]
     name: Optional[str] = None
 
     def __call__(self, program: itir.FencilDefinition, *args, **kwargs: Any) -> None:
-        if self.otf_workflow is None:
-            return None
         return self.otf_workflow(stages.ProgramCall(program, args, kwargs))(
             *args, offset_provider=kwargs["offset_provider"]
         )

@@ -230,7 +230,7 @@ class Program:
         else:
             raise RuntimeError(f"Program '{self}' does not have a backend set.")
 
-    def with_backend(self, backend: ppi.ProgramExecutor) -> Program:
+    def with_backend(self, backend: Optional[ppi.ProgramExecutor]) -> Program:
         return dataclasses.replace(self, backend=backend)
 
     def with_grid_type(self, grid_type: GridType) -> Program:

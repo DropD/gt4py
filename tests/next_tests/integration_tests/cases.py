@@ -416,6 +416,10 @@ def verify(
     used as an argument to the fieldview program and compared against ``ref``.
     Else, ``inout`` will not be passed and compared to ``ref``.
     """
+    import devtools
+
+    print(devtools.debug(case))
+
     if out:
         run(
             case,
@@ -609,4 +613,5 @@ class Case:
 
     @property
     def as_field(self):
+        return constructors.as_field.partial(allocator=self.allocator)
         return constructors.as_field.partial(allocator=self.allocator)
