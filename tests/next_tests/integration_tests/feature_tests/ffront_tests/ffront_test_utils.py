@@ -91,7 +91,7 @@ def exec_alloc_descriptor(request):
 
     backup_backend = decorator.DEFAULT_BACKEND
     decorator.DEFAULT_BACKEND = no_backend
-    yield backend
+    yield next_tests.definitions.BackendDescriptorWrapper(backend)
     decorator.DEFAULT_BACKEND = backup_backend
 
 

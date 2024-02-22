@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import functools
 import importlib.util
 import pathlib
 import tempfile
@@ -28,9 +30,10 @@ import gt4py.next.iterator.embedded as embedded
 import gt4py.next.iterator.ir as itir
 import gt4py.next.iterator.transforms as itir_transforms
 import gt4py.next.iterator.transforms.global_tmps as gtmps_transform
-import gt4py.next.program_processors.otf_compile_executor as otf_compile_executor
 import gt4py.next.program_processors.processor_interface as ppi
 from gt4py.eve.codegen import FormatTemplate as as_fmt, MakoTemplate as as_mako
+from gt4py.next.otf import stages, workflow
+from gt4py.next.program_processors import otf_backend
 
 
 def _create_tmp(axes, origin, shape, dtype):
@@ -200,6 +203,31 @@ def fencil_generator(
     return fencil
 
 
+@dataclasses.dataclass
+class Roundtrip(workflow.Workflow[stages.ProgramCall, stages.CompiledProgram]):
+    column_axis: Optional[common.Dimension] = None
+    debug: bool = False
+    lift_mode: itir_transforms.LiftMode = itir_transforms.LiftMode.FORCE_INLINE
+    dispatch_backend: Optional[ppi.ProgramExecutor] = None
+
+    def __call__(self, inp: stages.ProgramCall) -> stages.CompiledProgram:
+        fencil = fencil_generator(
+            ir=inp.program,
+            offset_provider=inp.kwargs["offset_provider"],
+            debug=self.debug,
+            lift_mode=self.lift_mode,
+            use_embedded=self.dispatch_backend is None,
+        )
+
+        new_kwargs: dict[str, Any] = {
+            "column_axis": self.column_axis,
+        }
+        if self.dispatch_backend:
+            new_kwargs["backend"] = self.dispatch_backend
+
+        return functools.partial(fencil, **new_kwargs)
+
+
 def execute_roundtrip(
     ir: itir.Node,
     *args,
@@ -227,8 +255,6 @@ def execute_roundtrip(
     return fencil(*args, **new_kwargs)
 
 
-executor = ppi.program_executor(execute_roundtrip)  # type: ignore[arg-type]
-
-backend = otf_compile_executor.OTFBackend(
-    executor=executor, allocator=next_allocators.StandardCPUFieldBufferAllocator()
+backend = otf_backend.OTFBackend(
+    otf_workflow=Roundtrip(), allocator=next_allocators.StandardCPUFieldBufferAllocator()
 )

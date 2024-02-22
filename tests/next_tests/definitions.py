@@ -22,7 +22,7 @@ from typing import Final, Optional, Protocol
 import pytest
 
 from gt4py.next import allocators as next_allocators
-from gt4py.next.program_processors import processor_interface as ppi
+from gt4py.next.program_processors import otf_backend, processor_interface as ppi
 
 
 # Skip definitions
@@ -68,9 +68,23 @@ class ExecutionAndAllocatorDescriptor(Protocol):
 
 
 @dataclasses.dataclass(frozen=True)
-class EmbeddedExecutionDescriptor:
+class BackendDescriptorWrapper:
+    backend: otf_backend.OTFBackend
+
+    @property
+    def executor(self) -> Optional[ppi.ProgramExecutor]:
+        return self.backend
+
+    @property
+    def allocator(self) -> next_allocators.FieldBufferAllocatorProtocol:
+        return self.backend.allocator
+
+
+@dataclasses.dataclass(frozen=True)
+class EmbeddedExecutionDescriptor(ppi.ProgramExecutor):
     allocator: next_allocators.FieldBufferAllocatorProtocol
     executor: Final = None
+    name: str = None
 
 
 numpy_execution = EmbeddedExecutionDescriptor(next_allocators.StandardCPUFieldBufferAllocator())

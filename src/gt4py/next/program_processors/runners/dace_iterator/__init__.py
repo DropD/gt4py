@@ -11,6 +11,8 @@
 # distribution for a copy of the license or check <https://www.gnu.org/licenses/>.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
+import dataclasses
+import functools
 import hashlib
 import warnings
 from inspect import currentframe, getframeinfo
@@ -26,11 +28,11 @@ from dace.transformation.interstate import RefineNestedAccess
 
 import gt4py.next.allocators as next_allocators
 import gt4py.next.iterator.ir as itir
-import gt4py.next.program_processors.otf_compile_executor as otf_exec
-import gt4py.next.program_processors.processor_interface as ppi
 from gt4py.next import common
 from gt4py.next.iterator import transforms as itir_transforms
+from gt4py.next.otf import stages, workflow
 from gt4py.next.otf.compilation import cache as compilation_cache
+from gt4py.next.program_processors import otf_backend
 from gt4py.next.type_system import type_specifications as ts, type_translation
 
 from .itir_to_sdfg import ItirToSDFG
@@ -421,9 +423,33 @@ def _run_dace_cpu(program: itir.FencilDefinition, *args, **kwargs) -> None:
     )
 
 
-run_dace_cpu = otf_exec.OTFBackend(
-    executor=ppi.program_executor(_run_dace_cpu, name="run_dace_cpu"),
+@dataclasses.dataclass(frozen=True)
+class DaceIterator(workflow.Workflow[stages.ProgramCall, stages.CompiledProgram]):
+    on_gpu: bool
+    build_cache: Any = dataclasses.field(default_factory=dict)
+    build_type: Any = _build_type
+
+    @property
+    def compiler_args(self):
+        if not self.on_gpu:
+            return {"compiler_args": dace.config.Config.get("compiler", "cpu", "args")}
+        return {}
+
+    def __call__(self, inp: stages.ProgramCall) -> stages.CompiledProgram:
+        return functools.partial(
+            run_dace_iterator,
+            inp.program,
+            *inp.args,
+            build_cache=self.build_cache,
+            build_type=self.build_type,
+            **(inp.kwargs | self.compiler_args),
+        )
+
+
+run_dace_cpu = otf_backend.OTFBackend(
+    otf_workflow=DaceIterator(on_gpu=False, build_cache=_build_cache),
     allocator=next_allocators.StandardCPUFieldBufferAllocator(),
+    name="run_dace_cpu",
 )
 
 if cp:
@@ -444,7 +470,8 @@ else:
         raise RuntimeError("Missing 'cupy' dependency for GPU execution.")
 
 
-run_dace_gpu = otf_exec.OTFBackend(
-    executor=ppi.program_executor(_run_dace_gpu, name="run_dace_gpu"),
+run_dace_gpu = otf_backend.OTFBackend(
+    otf_workflow=DaceIterator(on_gpu=True, build_cache=_build_cache),
     allocator=next_allocators.StandardGPUFieldBufferAllocator(),
+    name="run_dace_gpu",
 )
