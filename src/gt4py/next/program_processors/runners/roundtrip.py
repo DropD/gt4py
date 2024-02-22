@@ -28,9 +28,9 @@ import gt4py.next.iterator.embedded as embedded
 import gt4py.next.iterator.ir as itir
 import gt4py.next.iterator.transforms as itir_transforms
 import gt4py.next.iterator.transforms.global_tmps as gtmps_transform
-import gt4py.next.program_processors.otf_compile_executor as otf_compile_executor
 import gt4py.next.program_processors.processor_interface as ppi
 from gt4py.eve.codegen import FormatTemplate as as_fmt, MakoTemplate as as_mako
+from gt4py.next.otf import backend as otf_backend
 
 
 def _create_tmp(axes, origin, shape, dtype):
@@ -200,6 +200,7 @@ def fencil_generator(
     return fencil
 
 
+@ppi.program_executor  # type: ignore[arg-type]  # lazy
 def execute_roundtrip(
     ir: itir.Node,
     *args,
@@ -227,8 +228,6 @@ def execute_roundtrip(
     return fencil(*args, **new_kwargs)
 
 
-executor = ppi.program_executor(execute_roundtrip)  # type: ignore[arg-type]
-
-backend = otf_compile_executor.OTFBackend(
-    executor=executor, allocator=next_allocators.StandardCPUFieldBufferAllocator()
+backend = otf_backend.ExecutorWrapperBackend(
+    executor=execute_roundtrip, allocator=next_allocators.StandardCPUFieldBufferAllocator()
 )

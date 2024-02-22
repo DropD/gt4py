@@ -25,7 +25,7 @@ from gt4py.next.otf import backend, stages, workflow
 
 
 @dataclasses.dataclass(frozen=True)
-class CompileBackend(backend.Backend, Generic[core_defs.DeviceTypeT]):
+class CompileBackend(backend.Backend, ppi.ProgramExecutor, Generic[core_defs.DeviceTypeT]):
     name: str
     otf_workflow: workflow.Workflow[stages.ProgramCall, stages.CompiledProgram]
     allocator: next_allocators.FieldBufferAllocatorProtocol[core_defs.DeviceTypeT]
@@ -39,16 +39,10 @@ class CompileBackend(backend.Backend, Generic[core_defs.DeviceTypeT]):
     def executor(self) -> ppi.ProgramExecutor:
         return self
 
+    @executor.setter
+    def executor(self, value: Any) -> None:
+        raise AttributeError("CompileBackend.executor can not be set.")
+
     @property
     def __name__(self) -> str:
         return self.name
-
-    @property
-    def kind(self) -> type[ppi.ProgramExecutor]:
-        return ppi.ProgramExecutor
-
-    @property
-    def __gt_allocator__(
-        self,
-    ) -> next_allocators.FieldBufferAllocatorProtocol[core_defs.DeviceTypeT]:
-        return self.allocator

@@ -145,7 +145,7 @@ class GTFNCompileWorkflowFactory(factory.Factory):
 
 class GTFNBackendFactory(factory.Factory):
     class Meta:
-        model = otf_compile_executor.OTFBackend
+        model = otf_compile_executor.CompileBackend
 
     class Params:
         name_device = "cpu"
@@ -157,25 +157,24 @@ class GTFNBackendFactory(factory.Factory):
             name_device="gpu",
         )
         cached = factory.Trait(
-            executor=factory.LazyAttribute(
-                lambda o: otf_compile_executor.CachedOTFCompileExecutor(
-                    otf_workflow=workflow.CachedStep(o.otf_workflow, hash_function=o.hash_function),
-                    name=o.name,
-                )
+            otf_workflow=factory.Transformer(
+                factory.SubFactory(
+                    GTFNCompileWorkflowFactory, device_type=factory.SelfAttribute("..device_type")
+                ),
+                transform=functools.partial(
+                    workflow.CachedStep, hash_function=factory.SelfAttribute("hash_function")
+                ),
             ),
             name_cached="_cached",
         )
         device_type = core_defs.DeviceType.CPU
         hash_function = compilation_hash
-        otf_workflow = factory.SubFactory(
-            GTFNCompileWorkflowFactory, device_type=factory.SelfAttribute("..device_type")
-        )
-        name = factory.LazyAttribute(
-            lambda o: f"run_gtfn_{o.name_device}{o.name_cached}{o.name_postfix}"
-        )
 
-    executor = factory.LazyAttribute(
-        lambda o: otf_compile_executor.OTFCompileExecutor(otf_workflow=o.otf_workflow, name=o.name)
+    name = factory.LazyAttribute(
+        lambda o: f"run_gtfn_{o.name_device}{o.name_cached}{o.name_postfix}"
+    )
+    otf_workflow = factory.SubFactory(
+        GTFNCompileWorkflowFactory, device_type=factory.SelfAttribute("..device_type")
     )
     allocator = next_allocators.StandardCPUFieldBufferAllocator()
 

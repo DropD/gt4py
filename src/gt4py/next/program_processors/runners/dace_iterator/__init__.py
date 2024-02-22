@@ -421,7 +421,7 @@ def _run_dace_cpu(program: itir.FencilDefinition, *args, **kwargs) -> None:
     )
 
 
-run_dace_cpu = backend.Backend(
+run_dace_cpu = backend.ExecutorWrapperBackend(
     executor=ppi.program_executor(_run_dace_cpu, name="run_dace_cpu"),
     allocator=next_allocators.StandardCPUFieldBufferAllocator(),
 )
@@ -444,7 +444,7 @@ else:
         raise RuntimeError("Missing 'cupy' dependency for GPU execution.")
 
 
-run_dace_gpu = backend.Backend(
+run_dace_gpu = backend.ExecutorWrapperBackend(
     executor=ppi.program_executor(_run_dace_gpu, name="run_dace_gpu"),
     allocator=next_allocators.StandardGPUFieldBufferAllocator(),
 )
