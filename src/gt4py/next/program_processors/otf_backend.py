@@ -21,7 +21,7 @@ import gt4py._core.definitions as core_defs
 import gt4py.next.allocators as next_allocators
 import gt4py.next.iterator.ir as itir
 import gt4py.next.program_processors.processor_interface as ppi
-from gt4py.next.otf import languages, recipes, stages, workflow
+from gt4py.next.otf import languages, stages, workflow
 
 
 SrcL = TypeVar("SrcL", bound=languages.NanobindSrcL)
@@ -31,50 +31,21 @@ HashT = TypeVar("HashT")
 
 
 @dataclasses.dataclass(frozen=True)
-class OTFCompileExecutor(ppi.ProgramExecutor):
-    otf_workflow: recipes.OTFCompileWorkflow
-    name: Optional[str] = None
-
-    def __call__(self, program: itir.FencilDefinition, *args, **kwargs: Any) -> None:
-        self.otf_workflow(stages.ProgramCall(program, args, kwargs))(
-            *args, offset_provider=kwargs["offset_provider"]
-        )
-
-    @property
-    def __name__(self) -> str:
-        return self.name or repr(self)
-
-
-@dataclasses.dataclass(frozen=True)
-class CachedOTFCompileExecutor(ppi.ProgramExecutor, Generic[HashT]):
-    otf_workflow: workflow.CachedStep[stages.ProgramCall, stages.CompiledProgram, HashT]
-    name: Optional[str] = None
-
-    def __call__(self, program: itir.FencilDefinition, *args, **kwargs: Any) -> None:
-        self.otf_workflow(stages.ProgramCall(program, args, kwargs))(
-            *args, offset_provider=kwargs["offset_provider"]
-        )
-
-    @property
-    def __name__(self) -> str:
-        return self.name or repr(self)
-
-
-@dataclasses.dataclass(frozen=True)
-class OTFBackend(Generic[core_defs.DeviceTypeT]):
-    executor: ppi.ProgramExecutor
+class OTFBackend(ppi.ProgramExecutor, Generic[core_defs.DeviceTypeT]):
     allocator: next_allocators.FieldBufferAllocatorProtocol[core_defs.DeviceTypeT]
+    otf_workflow: Optional[workflow.Workflow[stages.ProgramCall, stages.CompiledProgram]]
+    name: Optional[str] = None
 
     def __call__(self, program: itir.FencilDefinition, *args, **kwargs: Any) -> None:
-        self.executor.__call__(program, *args, **kwargs)
+        if self.otf_workflow is None:
+            return None
+        return self.otf_workflow(stages.ProgramCall(program, args, kwargs))(
+            *args, offset_provider=kwargs["offset_provider"]
+        )
 
     @property
     def __name__(self) -> str:
-        return getattr(self.executor, "__name__", None) or repr(self)
-
-    @property
-    def kind(self) -> type[ppi.ProgramExecutor]:
-        return self.executor.kind
+        return self.name or "Anonymous Backend"
 
     @property
     def __gt_allocator__(
