@@ -130,7 +130,18 @@ class ProgramTransformWorkflow(workflow.NamedStepSequence):
     ] = dataclasses.field(default_factory=past_linters.LinterFactory)
     past_inject_args: workflow.Workflow[
         ffront_stages.PastProgramDefinition, ffront_stages.PastClosure
+<<<<<<< HEAD
     ] = dataclasses.field(default_factory=ProgArgsInjector)
+=======
+    ] = dataclasses.field(
+        default=lambda inp: ffront_stages.PastClosure(
+            definition=inp.data,
+            args=inp.args,
+            kwargs=inp.kwargs,
+        ),
+        metadata={"takes_args": True},
+    )
+>>>>>>> 269a243b (track whether size args are necessary until call time)
     past_transform_args: workflow.Workflow[ffront_stages.PastClosure, ffront_stages.PastClosure] = (
         dataclasses.field(default=past_process_args.PastProcessArgs(aot_off=False))
     )
