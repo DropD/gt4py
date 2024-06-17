@@ -1,6 +1,10 @@
 include:
 - remote: 'https://gitlab.com/cscs-ci/recipes/-/raw/master/templates/v2/.ci-ext.yml'
 
+.py311: &py311
+  PYVERSION_PREFIX: py311
+  PYVERSION: 3.11.9
+
 .py310: &py310
   PYVERSION_PREFIX: py310
   PYVERSION: 3.10.9
@@ -51,6 +55,11 @@ build py310 baseimage:
   variables:
     <<: *py310
 
+build py311 baseimage:
+  extends: build py38 baseimage
+  variables:
+    <<: *py311
+
 build py38 image:
   extends: .container-builder-cscs-zen2
   needs: ["build py38 baseimage"]
@@ -74,6 +83,12 @@ build py310 image:
   needs: ["build py310 baseimage"]
   variables:
     <<: *py310
+
+build py311 image:
+  extends: build py38 image
+  needs: ["build py310 baseimage"]
+  variables:
+    <<: *py311
 
 test py38:
   extends: .container-runner-daint-gpu
@@ -117,4 +132,8 @@ test py310:
     - SUBPACKAGE: eve
     - SUBPACKAGE: next
       VARIANT: [-nomesh, -atlas]
-      SUBVARIANT: [-cuda11x, -cpu]
+test py311:
+  extends: test py310
+  needs: ["build py311 image"]
+  variables:
+    <<: *py311
