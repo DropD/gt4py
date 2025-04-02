@@ -82,6 +82,37 @@ class ReplaceEnabledWorkflowMixin(Workflow[StartT_contra, EndT_co], Protocol):
         return dataclasses.replace(self, **kwargs)
 
 
+class RecursiveReplaceWorkflowMixin(Workflow[StartT, EndT], Protocol):
+    """
+    Subworkflow replacement mixin with pass-through to wrapped steps.
+
+    Any subclass as well as their wrapped steps must be dataclasses.
+    """
+
+    step: Workflow[StartT, EndT]
+
+    def replace(self, **kwargs: Any) -> Self:
+        """
+        Build a new instance with replaced substeps.
+
+        Raises:
+            TypeError: If `self` is not a dataclass.
+        """
+        if not dataclasses.is_dataclass(self):
+            raise TypeError(f"'{self.__class__}' is not a dataclass.")
+        assert not isinstance(self, type)
+        inner_kwargs = kwargs.copy()
+        outer_kwargs: dict[str, Any] = {}
+        for field in dataclasses.fields(self):
+            if field.name in inner_kwargs:
+                outer_kwargs[field.name] = inner_kwargs.pop(field.name)
+        if "step" not in outer_kwargs:
+            if not dataclasses.is_dataclass(self.step):
+                raise TypeError(f"'{self.step.__class__}' is not a dataclass.")
+            outer_kwargs["step"] = dataclasses.replace(self.step, **inner_kwargs)
+        return dataclasses.replace(self, **outer_kwargs)
+
+
 class ChainableWorkflowMixin(Workflow[StartT, EndT_co], Protocol[StartT, EndT_co]):
     def chain(
         self, next_step: Workflow[EndT_co, NewEndT]
@@ -225,7 +256,7 @@ class StepSequence(ChainableWorkflowMixin[StartT, EndT]):
 @dataclasses.dataclass(frozen=True)
 class CachedStep(
     ChainableWorkflowMixin[StartT, EndT],
-    ReplaceEnabledWorkflowMixin[StartT, EndT],
+    RecursiveReplaceWorkflowMixin[StartT, EndT],
     Generic[StartT, EndT, HashT],
 ):
     """
@@ -268,7 +299,7 @@ class CachedStep(
 
 @dataclasses.dataclass(frozen=True)
 class SkippableStep(
-    ChainableWorkflowMixin[StartT, EndT], ReplaceEnabledWorkflowMixin[StartT, EndT]
+    ChainableWorkflowMixin[StartT, EndT], RecursiveReplaceWorkflowMixin[StartT, EndT]
 ):
     step: Workflow[StartT, EndT]
 
