@@ -298,6 +298,8 @@ def from_dtype(dtype: core_defs.DType) -> ts.ScalarType:
         return ts.ScalarType(kind=ts.ScalarKind.FLOAT32)
     elif dtype == core_defs.Float64DType():
         return ts.ScalarType(kind=ts.ScalarKind.FLOAT64)
+    elif dtype == core_defs.UInt16DType():
+        return ts.ScalarType(kind=ts.ScalarKind.UINT16)
     raise ValueError(f"DType '{dtype}' not supported.")
 
 
