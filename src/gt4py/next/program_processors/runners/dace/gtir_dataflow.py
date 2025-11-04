@@ -29,6 +29,7 @@ import dace
 from dace import subsets as dace_subsets
 
 from gt4py import eve
+from gt4py.eve.extended_typing import MaybeNestedInTuple, NestedTuple
 from gt4py.next import common as gtx_common, utils as gtx_utils
 from gt4py.next.iterator import builtins as gtir_builtins, ir as gtir
 from gt4py.next.iterator.ir_utils import common_pattern_matcher as cpm, ir_makers as im
@@ -269,40 +270,33 @@ class DataflowOutputEdge:
         dest: dace.nodes.AccessNode,
         dest_subset: dace_subsets.Range,
     ) -> bool:
-        """Create the connection.
+        """Create a connection to the `dest` node, writing the given `dest_subset`.
 
         Might remove the last data container. Returns `True` if it was removed,
-        `False` if kept.
+        `False` if kept. For edges writing data from a nested SDFG, in case the
+        outside data container is removed, the caller is responsible to propagate
+        the strides of the destination array to the array inside the nested SDFG.
         """
+        dest_desc = self.result.dc_node.desc(self.state)
         write_edge = self.state.in_edges(self.result.dc_node)[0]
-        write_size = (
-            dace.symbolic.SymExpr(1)  # subset `None` not expected, but it can appear for scalars
-            if write_edge.data.dst_subset is None
-            else write_edge.data.dst_subset.num_elements()
-        )
-        # check the kind of node which writes the result
+
+        # Check the kind of node which writes the result
         if isinstance(write_edge.src, dace.nodes.Tasklet):
-            # The temporary data written by a tasklet can be safely deleted
-            assert isinstance(write_size, int) or str(write_size).isdigit()
+            # The temporary data written by a tasklet can be safely deleted.
+            assert map_exit is not None
             remove_last_node = True
         elif isinstance(write_edge.src, dace.nodes.NestedSDFG):
-            # TODO(phimuell, edopao): We need a better justification here, best would
-            #   be a reference to a DaCe/GT4Py issue on GH.
-            if isinstance(write_size, int) or str(write_size).isdigit():
-                # Temporary data with compile-time size is allocated on the stack
-                # and therefore is safe to keep. We decide to keep it as a workaround
-                # for a dace issue with memlet propagation in combination with
-                # nested SDFGs containing conditional blocks. The output memlet
-                # of such blocks will be marked as dynamic because dace is not able
-                # to detect the exact size of a conditional branch dataflow, even
-                # in case of if-else expressions with exact same output data.
+            if isinstance(dest_desc, dace.data.Scalar):
+                # We keep scalar temporary storage, as a general rule, since it
+                # does not affect performance of the generated code. This scalar
+                # is only required in some cases, e.g. for nested SDFGs implementing
+                # reduction, which use a WCR memlet for the reduction operation.
                 remove_last_node = False
             else:
-                # In case the output data has runtime size it is necessary to remove
-                # it in order to avoid dynamic memory allocation inside a parallel
-                # map scope. Otherwise, the memory allocation will for sure lead
-                # to performance degradation, and eventually illegal memory issues
-                # when the gpu runs out of local memory.
+                # We remove the transient array on the output connection of a nested
+                # SDFG and write directly to the destination node.
+                # The caller is responsible to propagate the strides of the destination
+                # array to the array inside the nested SDFG.
                 remove_last_node = True
         else:
             remove_last_node = False
@@ -371,7 +365,7 @@ def get_reduce_params(node: gtir.FunCall) -> tuple[str, SymbolExpr, SymbolExpr]:
 
 
 def get_tuple_type(
-    data: tuple[IteratorExpr | MemletExpr | ValueExpr | tuple[Any, ...], ...],
+    data: NestedTuple[IteratorExpr | MemletExpr | ValueExpr],
 ) -> ts.TupleType:
     """
     Compute the `ts.TupleType` corresponding to the tuple structure of input data expressions.
@@ -413,7 +407,7 @@ class LambdaToDataflow(eve.NodeVisitor):
     input_edges: list[DataflowInputEdge] = dataclasses.field(default_factory=lambda: [])
     symbol_map: dict[
         str,
-        IteratorExpr | DataExpr | tuple[IteratorExpr | DataExpr | tuple[Any, ...], ...],
+        MaybeNestedInTuple[IteratorExpr | DataExpr],
     ] = dataclasses.field(default_factory=dict)
 
     def _add_input_data_edge(
@@ -747,10 +741,7 @@ class LambdaToDataflow(eve.NodeVisitor):
         expr: gtir.Expr,
         if_sdfg_input_memlets: dict[str, MemletExpr | ValueExpr],
         direct_deref_iterators: Iterable[str],
-    ) -> tuple[
-        list[DataflowInputEdge],
-        tuple[DataflowOutputEdge | tuple[Any, ...], ...],
-    ]:
+    ) -> tuple[list[DataflowInputEdge], MaybeNestedInTuple[DataflowOutputEdge]]:
         """
         Helper method to visit an if-branch expression and lower it to a dataflow inside the given nested SDFG and state.
 
@@ -847,7 +838,7 @@ class LambdaToDataflow(eve.NodeVisitor):
         )
         return ValueExpr(output_node, edge.result.gt_dtype)
 
-    def _visit_if(self, node: gtir.FunCall) -> ValueExpr | tuple[ValueExpr | tuple[Any, ...], ...]:
+    def _visit_if(self, node: gtir.FunCall) -> MaybeNestedInTuple[ValueExpr]:
         """
         Lowers an if-expression with exclusive branch execution into a nested SDFG,
         in which each branch is lowered into a dataflow in a separate state and
@@ -942,24 +933,24 @@ class LambdaToDataflow(eve.NodeVisitor):
 
         for nstate, arg in zip([tstate, fstate], node.args[1:3]):
             # visit each if-branch in the corresponding state of the nested SDFG
-            in_edges, output_tree = self._visit_if_branch(
+            in_edges, out_edges = self._visit_if_branch(
                 nsdfg, nstate, arg, input_memlets, direct_deref_iterators
             )
             for edge in in_edges:
                 edge.connect(map_entry=None)
 
-            if isinstance(node.type, ts.TupleType):
-                out_symbol_tree = gtir_to_sdfg_utils.make_symbol_tree("__output", node.type)
-                outer_value = gtx_utils.tree_map(
-                    lambda x, y, nstate=nstate: self._visit_if_branch_result(nsdfg, nstate, x, y)
-                )(output_tree, out_symbol_tree)
-            else:
-                assert isinstance(node.type, ts.FieldType | ts.ScalarType)
-                assert len(output_tree) == 1 and isinstance(output_tree[0], DataflowOutputEdge)
-                output_edge = output_tree[0]
-                outer_value = self._visit_if_branch_result(
-                    nsdfg, nstate, output_edge, im.sym("__output", node.type)
+            out_syms = (
+                gtir_to_sdfg_utils.make_symbol_tree("__output", node.type)
+                if isinstance(node.type, ts.TupleType)
+                else im.sym("__output", node.type)
+            )
+
+            outer_value = gtx_utils.tree_map(
+                lambda edge, sym, nstate_=nstate: self._visit_if_branch_result(
+                    nsdfg, nstate_, edge, sym
                 )
+            )(out_edges, out_syms)
+
             # Isolated access node will make validation fail.
             # Isolated access nodes can be found in `make_tuple` expressions that
             # construct tuples from input arguments.
@@ -1803,9 +1794,7 @@ class LambdaToDataflow(eve.NodeVisitor):
         tuple_fields = self.visit(node.args[1])
         return tuple_fields[index]
 
-    def visit_FunCall(
-        self, node: gtir.FunCall
-    ) -> IteratorExpr | DataExpr | tuple[IteratorExpr | DataExpr | tuple[Any, ...], ...]:
+    def visit_FunCall(self, node: gtir.FunCall) -> MaybeNestedInTuple[IteratorExpr | DataExpr]:
         if cpm.is_call_to(node, "deref"):
             return self._visit_deref(node)
 
@@ -1843,9 +1832,7 @@ class LambdaToDataflow(eve.NodeVisitor):
         else:
             raise NotImplementedError(f"Invalid 'FunCall' node: {node}.")
 
-    def visit_Lambda(
-        self, node: gtir.Lambda
-    ) -> DataflowOutputEdge | tuple[DataflowOutputEdge | tuple[Any, ...], ...]:
+    def visit_Lambda(self, node: gtir.Lambda) -> MaybeNestedInTuple[DataflowOutputEdge]:
         def _visit_Lambda_impl(
             output_expr: DataflowOutputEdge | ValueExpr | MemletExpr | SymbolExpr,
         ) -> DataflowOutputEdge:
@@ -1886,9 +1873,7 @@ class LambdaToDataflow(eve.NodeVisitor):
         dc_dtype = gtx_dace_utils.as_dace_type(node.type)
         return SymbolExpr(node.value, dc_dtype)
 
-    def visit_SymRef(
-        self, node: gtir.SymRef
-    ) -> IteratorExpr | DataExpr | tuple[IteratorExpr | DataExpr | tuple[Any, ...], ...]:
+    def visit_SymRef(self, node: gtir.SymRef) -> MaybeNestedInTuple[IteratorExpr | DataExpr]:
         param = str(node.id)
         if param in self.symbol_map:
             return self.symbol_map[param]
@@ -1899,13 +1884,8 @@ class LambdaToDataflow(eve.NodeVisitor):
     def visit_let(
         self,
         node: gtir.Lambda,
-        args: Sequence[
-            IteratorExpr
-            | MemletExpr
-            | ValueExpr
-            | tuple[IteratorExpr | MemletExpr | ValueExpr | tuple[Any, ...], ...]
-        ],
-    ) -> DataflowOutputEdge | tuple[DataflowOutputEdge | tuple[Any, ...], ...]:
+        args: Sequence[MaybeNestedInTuple[IteratorExpr | MemletExpr | ValueExpr]],
+    ) -> MaybeNestedInTuple[DataflowOutputEdge]:
         """
         Maps lambda arguments to internal parameters.
 
@@ -1940,16 +1920,8 @@ def translate_lambda_to_dataflow(
     state: dace.SDFGState,
     sdfg_builder: gtir_to_sdfg.DataflowBuilder,
     node: gtir.Lambda,
-    args: Sequence[
-        IteratorExpr
-        | MemletExpr
-        | ValueExpr
-        | tuple[IteratorExpr | MemletExpr | ValueExpr | tuple[Any, ...], ...]
-    ],
-) -> tuple[
-    list[DataflowInputEdge],
-    tuple[DataflowOutputEdge | tuple[Any, ...], ...],
-]:
+    args: Sequence[MaybeNestedInTuple[IteratorExpr | MemletExpr | ValueExpr]],
+) -> tuple[list[DataflowInputEdge], MaybeNestedInTuple[DataflowOutputEdge]]:
     """
     Entry point to visit a `Lambda` node and lower it to a dataflow graph,
     that can be instantiated inside a map scope implementing the field operator.
@@ -1973,7 +1945,4 @@ def translate_lambda_to_dataflow(
     taskgen = LambdaToDataflow(sdfg, state, sdfg_builder)
     lambda_output = taskgen.visit_let(node, args)
 
-    if isinstance(lambda_output, DataflowOutputEdge):
-        return taskgen.input_edges, (lambda_output,)
-    else:
-        return taskgen.input_edges, lambda_output
+    return taskgen.input_edges, lambda_output
